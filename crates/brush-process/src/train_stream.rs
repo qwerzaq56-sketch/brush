@@ -642,16 +642,13 @@ async fn export_checkpoint(
     let digits = ((total_steps as f64).log10().floor() as usize) + 1;
     let export_name = export_name.replace("{iter}", &format!("{iter:0digits$}"));
     // Training runs in metres; write the file back in the dataset's units.
-    let export = brush_serde::prepare_ply_export(splats.scaled(units_per_meter), up_axis)
-        .await
-        .context("Reading back splat data")?;
     let file_path = export_path.join(&export_name);
     let file = std::fs::File::create(&file_path)
         .with_context(|| format!("Failed to create ply {}", file_path.display()))?;
     let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
-    export
-        .write_to(&mut writer)
-        .context("Serializing splat data")?;
+    brush_serde::splat_to_ply_writer(splats.scaled(units_per_meter), up_axis, &mut writer)
+        .await
+        .context("Exporting splat data")?;
     std::io::Write::flush(&mut writer)
         .with_context(|| format!("Failed to export ply {}", file_path.display()))?;
     Ok(())

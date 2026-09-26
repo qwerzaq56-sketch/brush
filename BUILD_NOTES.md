@@ -37,7 +37,7 @@ $env:RUSTFLAGS = "-C target-feature=+crt-static"; cargo build --release -p brush
 ```
 
 - 결과물: `target/release/brush.exe`. 이번 빌드에서는 `CARGO_TARGET_DIR=target\portable`을 썼습니다 (일반 빌드 캐시와 섞이지 않게).
-- `dist/native/` 구성: `brush.exe` (138,285,056 B, SHA-256 `8D32042A…B970D6`), `LICENSE`, 사용 가이드 `README_KO.txt`
+- `dist/native/` 구성: `brush.exe` (138,327,552 B, SHA-256 `85E6CE9B…BEF5A9F4`, 청크 Export 적용), `LICENSE`, 사용 가이드 `README_KO.txt`
 - 의존 DLL(`dumpbin /dependents`)은 모두 Windows 기본 DLL입니다 (kernel32, user32, dxgi, opengl32 등). vcruntime은 없습니다. GPU 드라이버 DLL(DX12/Vulkan)은 실행 중에 불러오며, NVIDIA 드라이버에 포함되어 있습니다.
 - 공식 배포(cargo-dist, `dist-workspace.toml`)는 installer 없이 zip만 만들고, 기본 `release` 프로필을 씁니다 (crt-static 없음).
 
@@ -55,7 +55,7 @@ npm run build                 # wasm-pack --release 후 next build (정적 내�
 - 결과물 `out/`을 `dist/web-demo/`로 복사했습니다 (파일 32개, 17.2 MB, wasm 16.3 MB). 빌드 약 7분.
 - GitHub Pages용 경로(`/brush-demo`)가 필요하면 `NEXT_PUBLIC_BASE_PATH=/brush-demo`를 주고 빌드합니다 (`build-gh-demo` 스크립트).
 - 로컬 확인: `node _work/serve-web-demo.mjs dist/web-demo 4175` → `http://localhost:4175/`. 정적 파일 서버라면 무엇이든 되지만, `.wasm`을 `application/wasm`으로 내보내야 합니다.
-- Export 수정은 `e700993a`의 API(제네릭 `Splats<B>`, up_axis/min_scale 없음)에 맞춰 옮겼습니다. 자동 체크포인트는 이 시점 런타임에 맞춰 비동기 쓰기를 유지하고, 중간 객체 목록만 없앴습니다 (web에는 자동 저장이 없음).
+- Export 수정은 `e700993a`의 API(제네릭 `Splats<B>`, up_axis/min_scale 없음)에 맞춰 옮겼습니다. 자동 체크포인트는 이 시점 런타임에 맞춰 비동기 파일 쓰기를 유지합니다. GPU 읽기는 청크로 하지만, 파일 내용은 한 번에 모아서 씁니다 (native 전용 기능이라 web에는 영향 없음).
 - 이 브랜치의 `cargo test -p brush-serde --release --features export`: 10개 통과. 기존 방식과 새 방식의 출력이 SH 0–3에서 바이트 단위로 같습니다.
 
 ## Web 빌드 (최신 main, 이 PC에서는 학습 불가)
@@ -101,17 +101,17 @@ Export는 native와 web이 같은 경로를 탑니다.
 PLY 포맷, 필드 순서와 이름, 쿼터니언 정규화, `bake_min_scale`, up_axis와 코멘트 처리는 모두 그대로 두었습니다.
 
 - `crates/brush-serde/src/export.rs`
-  - `PlyExport`를 추가했습니다. GPU에서 읽은 flat 배열만 보관하고, 행은 쓸 때 즉석에서 만듭니다. 그래서 `Vec<DynamicPlyGaussian>`이 없어졌습니다.
-  - `serde_ply::to_writer`에 lazy 시퀀스를 넘깁니다. serde_ply는 헤더를 만들 때 첫 행만 보고, 본문은 writer에 바로 씁니다.
-  - 새 API: `prepare_ply_export`, `PlyExport::write_to(impl Write)`, `splat_to_ply_writer`
-  - 기존 `splat_to_ply()` → `Vec<u8>`는 호환용으로 남겼고, 정확한 크기로 미리 할당하도록 바꿨습니다.
-  - 읽어온 배열 길이 검증을 추가했습니다.
-- `crates/rrfd/src/lib.rs`: `save_file_with(name, |w| ...)`를 추가했습니다. native는 저장 대화상자에서 고른 파일에 `BufWriter`(1 MB)로 바로 스트리밍합니다.
+  - GPU에서 splat을 `EXPORT_CHUNK_SPLATS`(262,144)개씩 잘라 읽고, 읽은 즉시 PLY 행으로 써서 버립니다. 전체 배열도, 중간 객체 목록(`Vec<DynamicPlyGaussian>`)도, 파일 전체 버퍼도 만들지 않습니다.
+  - PLY 헤더와 binary little-endian 본문을 직접 씁니다. 헤더 형식은 기존 `serde_ply` 출력과 같습니다 (테스트로 바이트 비교).
+  - API: `splat_to_ply_writer(splats, up_axis, impl Write)`. 기존 `splat_to_ply()` → `Vec<u8>`도 남겼습니다.
+  - 청크별로 읽어온 배열 길이를 검증합니다.
+  - 처음(1차)에는 GPU 데이터를 한 번에 읽고 파일 쓰기만 스트리밍했습니다. 웹에서 4M splat Export가 다시 `unreachable`로 실패해서 GPU 읽기도 청크로 나눴습니다 (2차).
+- `crates/rrfd/src/lib.rs`: `SaveTarget`을 추가했습니다. 저장 위치를 먼저 열고(`pick`), 청크마다 이어 쓴 뒤 `finish`로 마무리합니다. native는 저장 대화상자에서 고른 파일에 `BufWriter`(1 MB)로 바로 쓰고, web은 아래 `BlobPartsWriter`에 모았다가 다운로드합니다.
 - `crates/rrfd/src/wasm.rs`
   - `BlobPartsWriter`를 추가했습니다. 16 MB 단위로 JS `Uint8Array` 조각을 만들어 `Blob`으로 묶습니다. WASM 메모리에는 16 MB 버퍼 하나만 남습니다.
   - 기존 `save_file`도 조각 단위로 복사하도록 바꿨습니다.
   - 다운로드 URL 해제를 클릭 직후에서 60초 뒤로 늦췄습니다. 큰 파일 다운로드가 중간에 끊기는 것을 막기 위해서입니다.
-- `apps/brush-app/src/ui/training_panel.rs`: Export 버튼이 `prepare_ply_export` + `save_file_with`를 쓰도록 바꿨습니다.
+- `apps/brush-app/src/ui/training_panel.rs`: Export 버튼이 `SaveTarget::pick` → `splat_to_ply_writer` → `finish` 순서로 동작합니다. native에서는 저장 대화상자가 GPU 읽기보다 먼저 뜹니다.
 - `crates/brush-process/src/train_stream.rs`: 자동 체크포인트가 파일에 바로 스트리밍하도록 바꿨습니다.
 - `.gitignore`: `/dist`를 추가했습니다.
 
@@ -121,7 +121,7 @@ PLY 포맷, 필드 순서와 이름, 쿼터니언 정규화, `bake_min_scale`, u
 
 ### 단위 테스트 (`cargo test -p brush-serde --release`): 12개 통과
 
-- `test_streaming_matches_legacy_bytes`: 수정 전 exporter를 테스트 모듈에 그대로 보존해 두고 출력을 비교했습니다. SH 0/1/2/3, up_axis 유무, 정규화되지 않은 쿼터니언에서 **바이트 단위로 동일**합니다.
+- `test_streaming_matches_legacy_bytes`: 수정 전 exporter를 테스트 모듈에 그대로 보존해 두고 출력을 비교했습니다. SH 0/1/2/3, up_axis 유무, 정규화되지 않은 쿼터니언, 청크 크기 1/64/100/257/1000(splat 257개)에서 **바이트 단위로 동일**합니다.
 - 기존 export/import 왕복 테스트와 SH 차수별 필드 수 테스트도 모두 통과했습니다.
 
 ### 대용량 Export 메모리
@@ -134,7 +134,14 @@ PLY 포맷, 필드 순서와 이름, 쿼터니언 정규화, `bake_min_scale`, u
 | 2,764,885 | 수정 후 | **+1,897 MB** | **1,435 MB** | 2.6 s | 652,514,445 B |
 | 3,500,000 | 수정 후 | +2,374 MB | 1,742 MB | 3.1 s | 826,001,585 B, 재로드 정상 |
 
-수정 후 증가분은 GPU readback 스테이징 버퍼와 읽어온 배열이 대부분입니다. Web에서는 WASM 메모리에 readback 배열(~650 MB)과 16 MB 버퍼만 남는 구조입니다. 다만 브라우저에서 실측하지는 못했습니다 (아래 "알려진 제한사항" 참고).
+위 표는 1차 수정(파일 쓰기만 스트리밍) 기준입니다. private 메모리에는 GPU 드라이버와 cubecl이 잡는 스테이징 버퍼·메모리 풀도 섞여 있습니다. 그래서 2차 수정(청크 읽기) 후에는 테스트 전용 할당 추적기로 **Rust 힙만** 따로 측정했습니다. web에서 4 GB 한계에 걸리는 WASM 메모리가 이 Rust 힙에 해당합니다.
+
+| splats | 방식 | Export 중 Rust 힙 최대 증가 | private 메모리 증가 | 시간 | 파일 |
+|---|---|---|---|---|---|
+| 4,000,000 | 수정 전 | +1,984 MB | +5,266 MB | 4.8 s | 944,001,585 B |
+| 4,000,000 | 2차 수정 (청크) | **+60 MB** | +1,900 MB | 1.8 s | 944,001,585 B |
+
+2차 수정 후 Rust 힙 증가는 splat 수와 관계없이 청크 하나 분량(SH3 기준 약 60 MB)입니다.
 
 직접 실행하는 명령:
 
@@ -183,7 +190,7 @@ BRUSH_EXPORT_SPLATS=2764885 cargo test -p brush-serde --release -- --ignored lar
    - 13:25에 같은 프로세스의 메모리 급증 경고가 먼저 있었습니다.
    - 메모리 부족 계열 종료로 보이지만, Export 중이었는지는 로그로 확정할 수 없습니다.
 4. web Export(`BlobPartsWriter`)는 컴파일만 확인했고, 브라우저 실측은 하지 못했습니다.
-5. 수정 후에도 GPU에서 읽어온 전체 배열(splat 수 × 236 B)은 여전히 한 번에 메모리에 올라갑니다. 이것까지 청크 단위로 나누려면 본문 writer를 직접 구현해야 합니다 (계획서의 2-C). 3.5M splat까지는 필요하지 않았습니다.
+5. web에서 다운로드할 파일 자체는 브라우저(JS 쪽 Blob)에 모였다가 저장됩니다. WASM 4 GB 한계와는 무관하지만, 파일이 수 GB면 브라우저 메모리를 그만큼 씁니다.
 6. 자동 체크포인트 저장은 이제 학습 스레드에서 동기적으로 파일에 씁니다 (수 초). 기존에도 Export가 끝날 때까지 학습을 기다렸으므로 동작상 차이는 없습니다.
 
 ## 로컬 폴더 구성
