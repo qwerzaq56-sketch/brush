@@ -9,7 +9,7 @@ pub mod quant;
 
 // Re-export main functionality
 #[cfg(feature = "export")]
-pub use export::{ExportError, splat_to_ply};
+pub use export::{ExportError, PlyExport, prepare_ply_export, splat_to_ply, splat_to_ply_writer};
 #[cfg(feature = "import")]
 pub use import::{
     ParseMetadata, SplatData, SplatMessage, load_splat_from_ply, stream_splat_from_ply,

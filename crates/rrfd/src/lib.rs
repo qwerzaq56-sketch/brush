@@ -102,3 +102,44 @@ pub async fn save_file(default_name: &str, data: Vec<u8>) -> Result<(), PickFile
         panic!("No saving on Android yet.")
     }
 }
+
+/// Like [`save_file`], but streams the contents through `write` instead of
+/// requiring the whole file in memory. Natively this writes straight to the
+/// chosen file; on the web it is collected into chunked Blob parts.
+///
+/// Nb: Does not work on Android currently.
+pub async fn save_file_with<F>(default_name: &str, write: F) -> Result<(), PickFileError>
+where
+    F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+{
+    #[cfg(all(not(target_os = "android"), not(target_family = "wasm")))]
+    {
+        use std::io::Write;
+
+        let file = rfd::AsyncFileDialog::new()
+            .set_file_name(default_name)
+            .save_file()
+            .await
+            .ok_or(PickFileError::NoFileSelected)?;
+
+        let mut writer =
+            std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(file.path())?);
+        write(&mut writer)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    #[cfg(target_family = "wasm")]
+    {
+        let mut writer = wasm::BlobPartsWriter::new();
+        write(&mut writer)?;
+        writer.save(default_name)
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = default_name;
+        let _ = write;
+        panic!("No saving on Android yet.")
+    }
+}

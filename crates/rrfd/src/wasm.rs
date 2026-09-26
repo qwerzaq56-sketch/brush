@@ -172,15 +172,72 @@ pub async fn pick_directory_handle() -> Result<DirectoryHandle, PickFileError> {
 }
 
 pub async fn save_file(default_name: &str, data: &[u8]) -> Result<(), PickFileError> {
+    let blob_parts = js_sys::Array::new();
+    for chunk in data.chunks(BlobPartsWriter::PART_SIZE) {
+        blob_parts.push(&Uint8Array::from(chunk));
+    }
+    download_blob_parts(default_name, &blob_parts)
+}
+
+/// `io::Write` sink that copies data into JS-side `Uint8Array` parts as it
+/// goes, so the wasm heap only ever holds one part-sized buffer.
+pub struct BlobPartsWriter {
+    parts: js_sys::Array,
+    buf: Vec<u8>,
+}
+
+impl BlobPartsWriter {
+    const PART_SIZE: usize = 16 * 1024 * 1024;
+
+    pub fn new() -> Self {
+        Self {
+            parts: js_sys::Array::new(),
+            buf: Vec::with_capacity(Self::PART_SIZE),
+        }
+    }
+
+    fn flush_part(&mut self) {
+        if !self.buf.is_empty() {
+            self.parts.push(&Uint8Array::from(self.buf.as_slice()));
+            self.buf.clear();
+        }
+    }
+
+    /// Offer the collected data to the user as a download.
+    pub fn save(mut self, default_name: &str) -> Result<(), PickFileError> {
+        self.flush_part();
+        drop(std::mem::take(&mut self.buf));
+        download_blob_parts(default_name, &self.parts)
+    }
+}
+
+impl Default for BlobPartsWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl io::Write for BlobPartsWriter {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let n = data.len().min(Self::PART_SIZE - self.buf.len());
+        self.buf.extend_from_slice(&data[..n]);
+        if self.buf.len() >= Self::PART_SIZE {
+            self.flush_part();
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn download_blob_parts(default_name: &str, blob_parts: &js_sys::Array) -> Result<(), PickFileError> {
     let window = web_sys::window().ok_or(PickFileError::NoFileSelected)?;
     let document = window.document().ok_or(PickFileError::NoFileSelected)?;
 
-    let array = Uint8Array::from(data);
-    let blob_parts = js_sys::Array::new();
-    blob_parts.push(&array);
-
     let blob =
-        Blob::new_with_u8_array_sequence(&blob_parts).map_err(|_| PickFileError::NoFileSelected)?;
+        Blob::new_with_u8_array_sequence(blob_parts).map_err(|_| PickFileError::NoFileSelected)?;
 
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|_| PickFileError::NoFileSelected)?;
@@ -201,7 +258,15 @@ pub async fn save_file(default_name: &str, data: &[u8]) -> Result<(), PickFileEr
     anchor.click();
     let _ = body.remove_child(&anchor);
 
-    let _ = web_sys::Url::revoke_object_url(&url);
+    // Revoking right after click() can abort large downloads before the
+    // browser has started reading the blob, so release it a bit later.
+    let revoke = Closure::once_into_js(move || {
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        revoke.unchecked_ref(),
+        60_000,
+    );
     Ok(())
 }
 

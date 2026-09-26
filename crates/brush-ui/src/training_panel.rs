@@ -85,8 +85,11 @@ impl TrainingPanel {
 }
 
 async fn export(splat: Splats<MainBackend>) -> Result<(), Error> {
-    let data = brush_serde::splat_to_ply(splat).await?;
-    rrfd::save_file("export.ply", data).await?;
+    let export = brush_serde::prepare_ply_export(splat).await?;
+    rrfd::save_file_with("export.ply", |writer| {
+        export.write_to(writer).map_err(std::io::Error::other)
+    })
+    .await?;
     Ok(())
 }
 
