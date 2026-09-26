@@ -3,10 +3,7 @@ use std::io::Write;
 use brush_render::gaussian_splats::Splats;
 use brush_render::sh::sh_coeffs_for_degree;
 use burn::prelude::Backend;
-use burn::tensor::Transaction;
-use serde::ser::{SerializeSeq, SerializeStruct};
-use serde::{Serialize, Serializer};
-use serde_ply::{SerializeError, SerializeOptions};
+use burn::tensor::{Transaction, s};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -15,176 +12,130 @@ pub enum ExportError {
     FetchFailed,
     #[error("Failed to convert tensor data to f32 - data may be corrupted")]
     DataConversion,
-    #[error("PLY serialization failed: {0}")]
-    Serialize(#[from] SerializeError),
+    #[error("Failed to write PLY: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 const SH_NAMES: [&str; 72] = brush_serde_macros::sh_field_names!();
 
-/// Splat data read back from the GPU as flat arrays, ready to be written as a PLY.
-///
-/// Rows are generated on the fly while writing, so exporting never builds a
-/// per-splat object list or (unless asked for) a whole-file byte buffer.
-pub struct PlyExport {
-    /// `[n, 10]`: means(3) + rotations(4) + log_scales(3).
-    transforms: Vec<f32>,
-    raw_opacities: Vec<f32>,
-    /// `[n, channel, coeffs]` (inria layout).
-    sh_coeffs: Vec<f32>,
-    coeffs_per_channel: usize,
-    num_splats: usize,
-    comments: Vec<String>,
+/// Splats read back from the GPU per export chunk. Bounds the extra memory an
+/// export needs (~60 MB at SH degree 3) regardless of the total splat count.
+pub const EXPORT_CHUNK_SPLATS: usize = 1 << 18;
+
+/// Stream the splats as a binary little-endian PLY into `writer`, reading them
+/// back from the GPU in chunks of [`EXPORT_CHUNK_SPLATS`].
+pub async fn splat_to_ply_writer<B: Backend>(
+    splats: Splats<B>,
+    mut writer: impl Write,
+) -> Result<(), ExportError> {
+    write_ply_chunked(splats, &mut writer, EXPORT_CHUNK_SPLATS).await
 }
 
-impl PlyExport {
-    pub fn num_splats(&self) -> usize {
-        self.num_splats
-    }
-
-    /// Size of the vertex data in bytes (excluding the header).
-    pub fn body_len(&self) -> usize {
-        self.num_splats * (11 + 3 * self.coeffs_per_channel) * size_of::<f32>()
-    }
-
-    /// Serialize the PLY (header + binary little-endian rows) into `writer`.
-    pub fn write_to(&self, writer: impl Write) -> Result<(), ExportError> {
-        serde_ply::to_writer(
-            &PlyBody {
-                vertex: VertexRows(self),
-            },
-            SerializeOptions::binary_le().with_comments(self.comments.clone()),
-            writer,
-        )?;
-        Ok(())
-    }
-
-    pub fn to_bytes(&self) -> Result<Vec<u8>, ExportError> {
-        const HEADER_SLACK: usize = 16 * 1024;
-        let mut buf = Vec::with_capacity(self.body_len() + HEADER_SLACK);
-        self.write_to(&mut buf)?;
-        Ok(buf)
-    }
+pub async fn splat_to_ply<B: Backend>(splats: Splats<B>) -> Result<Vec<u8>, ExportError> {
+    let mut buf = Vec::new();
+    splat_to_ply_writer(splats, &mut buf).await?;
+    Ok(buf)
 }
 
-#[derive(Serialize)]
-struct PlyBody<'a> {
-    vertex: VertexRows<'a>,
-}
-
-struct VertexRows<'a>(&'a PlyExport);
-
-impl Serialize for VertexRows<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let data = self.0;
-        let mut seq = serializer.serialize_seq(Some(data.num_splats))?;
-        for i in 0..data.num_splats {
-            seq.serialize_element(&VertexRow { data, i })?;
-        }
-        seq.end()
-    }
-}
-
-struct VertexRow<'a> {
-    data: &'a PlyExport,
-    i: usize,
-}
-
-impl Serialize for VertexRow<'_> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let d = self.data;
-        let i = self.i;
-        let n_coeffs = d.coeffs_per_channel;
-        let rest_per_channel = n_coeffs - 1;
-
-        let t = &d.transforms[i * 10..i * 10 + 10];
-        let sh = &d.sh_coeffs[i * n_coeffs * 3..(i + 1) * n_coeffs * 3];
-        let (r0, r1, r2, r3) = (t[3], t[4], t[5], t[6]);
-        let rn = (r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3).sqrt().max(1e-12);
-
-        let mut state = serializer.serialize_struct("DynamicPlyGaussian", 14 + rest_per_channel * 3)?;
-        state.serialize_field("x", &t[0])?;
-        state.serialize_field("y", &t[1])?;
-        state.serialize_field("z", &t[2])?;
-        state.serialize_field("scale_0", &t[7])?;
-        state.serialize_field("scale_1", &t[8])?;
-        state.serialize_field("scale_2", &t[9])?;
-        state.serialize_field("opacity", &d.raw_opacities[i])?;
-        state.serialize_field("rot_0", &(r0 / rn))?;
-        state.serialize_field("rot_1", &(r1 / rn))?;
-        state.serialize_field("rot_2", &(r2 / rn))?;
-        state.serialize_field("rot_3", &(r3 / rn))?;
-        state.serialize_field("f_dc_0", &sh[0])?;
-        state.serialize_field("f_dc_1", &sh[n_coeffs])?;
-        state.serialize_field("f_dc_2", &sh[n_coeffs * 2])?;
-
-        // f_rest_* are all red rest coeffs, then green, then blue.
-        let rest = (0..3).flat_map(|c| &sh[c * n_coeffs + 1..(c + 1) * n_coeffs]);
-        for (name, val) in SH_NAMES.iter().zip(rest) {
-            state.serialize_field(name, val)?;
-        }
-        state.end()
-    }
-}
-
-/// Read the splats back from the GPU into a [`PlyExport`].
-pub async fn prepare_ply_export<B: Backend>(splats: Splats<B>) -> Result<PlyExport, ExportError> {
+async fn write_ply_chunked<B: Backend>(
+    splats: Splats<B>,
+    writer: &mut impl Write,
+    chunk_splats: usize,
+) -> Result<(), ExportError> {
     let sh_degree = splats.sh_degree();
     let num_splats = splats.num_splats() as usize;
+    let n_coeffs = sh_coeffs_for_degree(sh_degree) as usize;
     let render_mode_str = if splats.render_mip { "mip" } else { "default" };
 
-    let data = Transaction::default()
-        .register(splats.transforms.val())
-        .register(splats.raw_opacities.val())
-        .register(splats.sh_coeffs.val().permute([0, 2, 1])) // Permute to inria format ([n, channel, coeffs]).
-        .execute_async()
-        .await
-        .map_err(|_fetch| ExportError::FetchFailed)?;
-    drop(splats);
-
-    let vecs: Vec<Vec<f32>> = data
-        .into_iter()
-        .map(|x| x.into_vec().map_err(|_convert| ExportError::DataConversion))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let [transforms, raw_opacities, sh_coeffs]: [Vec<f32>; 3] = vecs
-        .try_into()
-        .map_err(|_convert| ExportError::DataConversion)?;
-
-    let coeffs_per_channel = sh_coeffs_for_degree(sh_degree) as usize;
-    if transforms.len() != num_splats * 10
-        || raw_opacities.len() != num_splats
-        || sh_coeffs.len() != num_splats * coeffs_per_channel * 3
-    {
-        return Err(ExportError::DataConversion);
-    }
-
-    let comments = vec![
+    let comments = [
         "Exported from Brush".to_owned(),
         "Vertical axis: y".to_owned(),
         format!("SH degree: {sh_degree}"),
         format!("SplatRenderMode: {render_mode_str}"),
     ];
+    write_header(writer, &comments, num_splats, n_coeffs)?;
 
-    Ok(PlyExport {
-        transforms,
-        raw_opacities,
-        sh_coeffs,
-        coeffs_per_channel,
-        num_splats,
-        comments,
-    })
+    let row_floats = 11 + 3 * n_coeffs;
+    let mut body = Vec::with_capacity(chunk_splats.min(num_splats) * row_floats * size_of::<f32>());
+
+    for start in (0..num_splats).step_by(chunk_splats.max(1)) {
+        let end = (start + chunk_splats).min(num_splats);
+        let data = Transaction::default()
+            .register(splats.transforms.val().slice(s![start..end]))
+            .register(splats.raw_opacities.val().slice(s![start..end]))
+            // Permute to inria format ([n, channel, coeffs]).
+            .register(splats.sh_coeffs.val().slice(s![start..end]).permute([0, 2, 1]))
+            .execute_async()
+            .await
+            .map_err(|_fetch| ExportError::FetchFailed)?;
+
+        let [transforms, raw_opacities, sh_coeffs]: [Vec<f32>; 3] = data
+            .into_iter()
+            .map(|x| x.into_vec().map_err(|_convert| ExportError::DataConversion))
+            .collect::<Result<Vec<_>, _>>()?
+            .try_into()
+            .map_err(|_convert| ExportError::DataConversion)?;
+
+        let n = end - start;
+        if transforms.len() != n * 10 || raw_opacities.len() != n || sh_coeffs.len() != n * n_coeffs * 3 {
+            return Err(ExportError::DataConversion);
+        }
+
+        body.clear();
+        for i in 0..n {
+            let t = &transforms[i * 10..i * 10 + 10];
+            let sh = &sh_coeffs[i * n_coeffs * 3..(i + 1) * n_coeffs * 3];
+            let (r0, r1, r2, r3) = (t[3], t[4], t[5], t[6]);
+            let rn = (r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3).sqrt().max(1e-12);
+
+            let row = [
+                t[0],
+                t[1],
+                t[2],
+                t[7],
+                t[8],
+                t[9],
+                raw_opacities[i],
+                r0 / rn,
+                r1 / rn,
+                r2 / rn,
+                r3 / rn,
+                sh[0],
+                sh[n_coeffs],
+                sh[n_coeffs * 2],
+            ];
+            // f_rest_* are all red rest coeffs, then green, then blue.
+            let rest = (0..3).flat_map(|c| &sh[c * n_coeffs + 1..(c + 1) * n_coeffs]);
+            for v in row.iter().chain(rest) {
+                body.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        writer.write_all(&body)?;
+    }
+    Ok(())
 }
 
-/// Stream the splats as a PLY into `writer`.
-pub async fn splat_to_ply_writer<B: Backend>(
-    splats: Splats<B>,
-    writer: impl Write,
-) -> Result<(), ExportError> {
-    prepare_ply_export(splats).await?.write_to(writer)
-}
-
-pub async fn splat_to_ply<B: Backend>(splats: Splats<B>) -> Result<Vec<u8>, ExportError> {
-    prepare_ply_export(splats).await?.to_bytes()
+/// Header layout matches what `serde_ply` produced for the previous exporter.
+fn write_header(
+    writer: &mut impl Write,
+    comments: &[String],
+    num_splats: usize,
+    n_coeffs: usize,
+) -> std::io::Result<()> {
+    let mut header = String::from("ply\nformat binary_little_endian 1.0\n");
+    for c in comments {
+        header.push_str(&format!("comment {c}\n"));
+    }
+    header.push_str(&format!("element vertex {num_splats}\n"));
+    let base = [
+        "x", "y", "z", "scale_0", "scale_1", "scale_2", "opacity", "rot_0", "rot_1", "rot_2",
+        "rot_3", "f_dc_0", "f_dc_1", "f_dc_2",
+    ];
+    for name in base.iter().chain(&SH_NAMES[..3 * (n_coeffs - 1)]) {
+        header.push_str(&format!("property float {name}\n"));
+    }
+    header.push_str("end_header\n");
+    writer.write_all(header.as_bytes())
 }
 
 #[cfg(test)]
@@ -234,13 +185,17 @@ mod tests {
             let splats = create_test_splats(degree);
             assert_eq!(splats.sh_degree(), degree);
 
-            let export = prepare_ply_export(splats.clone()).await.unwrap();
+            let bytes = splat_to_ply(splats).await.unwrap();
+            let header_end = bytes
+                .windows(b"end_header\n".len())
+                .position(|w| w == b"end_header\n")
+                .unwrap()
+                + b"end_header\n".len();
             let expected_rest_coeffs = (sh_coeffs_for_degree(degree) - 1) * 3;
             assert_eq!(
-                export.body_len(),
+                bytes.len() - header_end,
                 (14 + expected_rest_coeffs as usize) * size_of::<f32>()
             );
-            assert!(splat_to_ply(splats).await.is_ok());
         }
     }
 
@@ -248,6 +203,9 @@ mod tests {
     /// streaming writer can be checked for byte-identical output.
     mod legacy {
         use super::*;
+        use serde::ser::SerializeStruct;
+        use serde::{Serialize, Serializer};
+        use serde_ply::SerializeOptions;
 
         struct DynamicPlyGaussian {
             x: f32,
@@ -405,6 +363,16 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(streamed, expected, "writer, degree {degree}");
+
+            // Chunk boundaries must not change the output: one splat per
+            // chunk, uneven chunks with a remainder, and exact multiples.
+            for chunk in [1, 64, 100, 257, 1000] {
+                let mut chunked = Vec::new();
+                write_ply_chunked(splats.clone(), &mut chunked, chunk)
+                    .await
+                    .unwrap();
+                assert_eq!(chunked, expected, "chunk {chunk}, degree {degree}");
+            }
         }
     }
 

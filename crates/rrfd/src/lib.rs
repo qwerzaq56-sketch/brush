@@ -103,43 +103,80 @@ pub async fn save_file(default_name: &str, data: Vec<u8>) -> Result<(), PickFile
     }
 }
 
-/// Like [`save_file`], but streams the contents through `write` instead of
-/// requiring the whole file in memory. Natively this writes straight to the
-/// chosen file; on the web it is collected into chunked Blob parts.
+/// A file being saved incrementally, so large outputs never have to exist in
+/// memory as a whole. Natively the user picks a path up front and writes go
+/// straight to disk; on the web they are collected into chunked Blob parts
+/// and offered as a download by [`SaveTarget::finish`].
 ///
 /// Nb: Does not work on Android currently.
-pub async fn save_file_with<F>(default_name: &str, write: F) -> Result<(), PickFileError>
-where
-    F: FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
-{
+pub struct SaveTarget {
     #[cfg(all(not(target_os = "android"), not(target_family = "wasm")))]
-    {
-        use std::io::Write;
-
-        let file = rfd::AsyncFileDialog::new()
-            .set_file_name(default_name)
-            .save_file()
-            .await
-            .ok_or(PickFileError::NoFileSelected)?;
-
-        let mut writer =
-            std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(file.path())?);
-        write(&mut writer)?;
-        writer.flush()?;
-        Ok(())
-    }
-
+    inner: std::io::BufWriter<std::fs::File>,
     #[cfg(target_family = "wasm")]
-    {
-        let mut writer = wasm::BlobPartsWriter::new();
-        write(&mut writer)?;
-        writer.save(default_name)
+    inner: wasm::BlobPartsWriter,
+    #[cfg(target_family = "wasm")]
+    name: String,
+    #[cfg(target_os = "android")]
+    inner: std::io::Sink,
+}
+
+impl SaveTarget {
+    pub async fn pick(default_name: &str) -> Result<Self, PickFileError> {
+        #[cfg(all(not(target_os = "android"), not(target_family = "wasm")))]
+        {
+            let file = rfd::AsyncFileDialog::new()
+                .set_file_name(default_name)
+                .save_file()
+                .await
+                .ok_or(PickFileError::NoFileSelected)?;
+            let file = std::fs::File::create(file.path())?;
+            Ok(Self {
+                inner: std::io::BufWriter::with_capacity(1 << 20, file),
+            })
+        }
+
+        #[cfg(target_family = "wasm")]
+        {
+            Ok(Self {
+                inner: wasm::BlobPartsWriter::new(),
+                name: default_name.to_owned(),
+            })
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            let _ = default_name;
+            panic!("No saving on Android yet.")
+        }
     }
 
-    #[cfg(target_os = "android")]
-    {
-        let _ = default_name;
-        let _ = write;
-        panic!("No saving on Android yet.")
+    pub fn finish(self) -> Result<(), PickFileError> {
+        #[cfg(all(not(target_os = "android"), not(target_family = "wasm")))]
+        {
+            use std::io::Write;
+            let mut inner = self.inner;
+            inner.flush()?;
+            Ok(())
+        }
+
+        #[cfg(target_family = "wasm")]
+        {
+            self.inner.save(&self.name)
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            Ok(())
+        }
+    }
+}
+
+impl std::io::Write for SaveTarget {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }

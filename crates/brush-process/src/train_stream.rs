@@ -538,10 +538,8 @@ async fn export_checkpoint(
         .with_context(|| format!("Creating export directory {}", export_path.display()))?;
     let digits = ((total_steps as f64).log10().floor() as usize) + 1;
     let export_name = export_name.replace("{iter}", &format!("{iter:0digits$}"));
-    let splat_data = brush_serde::prepare_ply_export(splats)
+    let splat_data = brush_serde::splat_to_ply(splats)
         .await
-        .context("Reading back splat data")?
-        .to_bytes()
         .context("Serializing splat data")?;
     tokio::fs::write(export_path.join(&export_name), splat_data)
         .await
