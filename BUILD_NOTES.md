@@ -37,7 +37,7 @@ $env:RUSTFLAGS = "-C target-feature=+crt-static"; cargo build --release -p brush
 ```
 
 - 결과물: `target/release/brush.exe`. 이번 빌드에서는 `CARGO_TARGET_DIR=target\portable`을 썼습니다 (일반 빌드 캐시와 섞이지 않게).
-- `dist/native/` 구성: `brush.exe` (138,327,552 B, SHA-256 `85E6CE9B…BEF5A9F4`, 청크 Export 적용), `LICENSE`, 사용 가이드 `README_KO.txt`
+- `dist/native/` 구성: `brush.exe` (138,325,504 B, SHA-256 `AB6AA895…D36CA849`, 청크 Export + 📷 시점 맞추기 버튼 적용), `LICENSE`, 사용 가이드 `README_KO.txt`
 - 의존 DLL(`dumpbin /dependents`)은 모두 Windows 기본 DLL입니다 (kernel32, user32, dxgi, opengl32 등). vcruntime은 없습니다. GPU 드라이버 DLL(DX12/Vulkan)은 실행 중에 불러오며, NVIDIA 드라이버에 포함되어 있습니다.
 - 공식 배포(cargo-dist, `dist-workspace.toml`)는 installer 없이 zip만 만들고, 기본 `release` 프로필을 씁니다 (crt-static 없음).
 
@@ -116,6 +116,14 @@ PLY 포맷, 필드 순서와 이름, 쿼터니언 정규화, `bake_min_scale`, u
 - `.gitignore`: `/dist`를 추가했습니다.
 
 변경 규모: 7개 파일, +489 / −168 (대부분 export.rs의 테스트와 기존 구현 보존분)
+
+## UI 개선: 현재 이미지 시점으로 맞추기
+
+원본은 데이터셋 패널에서 이미지를 넘길 때(◀ ▶, 슬라이더)만 뷰포트 카메라가 그 이미지 시점으로 이동합니다. 지금 보이는 이미지에 다시 맞추려면 다른 이미지로 갔다가 돌아와야 했습니다.
+
+- 데이터셋 패널 위쪽 ◀ 왼쪽에 **📷 버튼**을 추가했습니다. 누르면 지금 보이는 이미지의 카메라로 뷰포트를 맞춥니다.
+- 미리보기 이미지를 **더블클릭**해도 같은 동작을 합니다.
+- 포터블(`apps/brush-app/src/ui/datasets.rs`)과 웹 데모(`crates/brush-ui/src/datasets.rs`) 모두에 적용했습니다. 기존 `focus_picked`를 그대로 사용합니다.
 
 ## 테스트 결과
 

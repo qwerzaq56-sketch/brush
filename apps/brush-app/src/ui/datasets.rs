@@ -399,7 +399,12 @@ impl AppPane for DatasetPanel {
             );
         }
 
-        ui.allocate_rect(full_rect, egui::Sense::click());
+        let response = ui
+            .allocate_rect(full_rect, egui::Sense::click())
+            .on_hover_text("Double-click to match the viewport to this image");
+        if response.double_clicked() {
+            self.focus_picked(process);
+        }
     }
 
     fn inner_margin(&self) -> f32 {
@@ -479,6 +484,13 @@ impl AppPane for DatasetPanel {
             if nav_button(ui, "◀").clicked() {
                 current_idx = (current_idx + view_count - 1) % view_count;
                 self.current_view_index = Some(current_idx);
+                self.focus_picked(process);
+            }
+
+            if nav_button(ui, "📷")
+                .on_hover_text("Match the viewport to this image (or double-click the image)")
+                .clicked()
+            {
                 self.focus_picked(process);
             }
         });
