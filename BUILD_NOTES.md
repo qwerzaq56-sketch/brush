@@ -7,7 +7,8 @@
 | 원본 저장소 | https://github.com/ArthurBrussee/brush |
 | 포크 | https://github.com/qwerzaq56-sketch/brush |
 | 기준 커밋 | `5ee2053437bcb5d42d64b361d82cd8c915f87ad1` (main, 2026-09-20, "Let burn generate the Fusion plumbing (#553)"), v0.3.0 이후 198커밋 |
-| 작업 브랜치 | `export-streaming` |
+| 작업 브랜치 | `export-streaming` (native portable용, 최신 main 기준) |
+| 웹용 브랜치 | `web-demo-base`: 공식 웹 데모와 같은 `e700993a` (2026-04-25, "Update deps & fix WASM") + 같은 Export 수정 |
 
 ## 빌드 환경
 
@@ -16,7 +17,7 @@
 | OS | Windows 10 Home 10.0.19045 |
 | GPU / 드라이버 | NVIDIA GeForce RTX 2060 SUPER 8GB / 596.36 |
 | Rust | rustc 1.98.1, cargo 1.98.1 (stable-x86_64-pc-windows-msvc, README 요구사항 1.88+) |
-| C/C++ 컴파일러 | Visual Studio 2022 Build Tools 17.14 (MSVC 14.44.35207, C++ 워크로드). `libsqlite3-sys` 등 C 의존성 빌드에 필요 |
+| C/C++ 컴파일러 | Visual Studio Build Tools 2026 18.10 (MSVC 14.51.36231, C++ 워크로드, `F:\VS\BuildTools`). 링커와 `libsqlite3-sys` 등 C 의존성 빌드에 필요. 처음에는 H:의 2022 Build Tools를 썼으나 H 고장으로 다시 설치 |
 | Node.js / npm | 24.19.0 / 11.17.0 |
 | wasm-pack | 0.15.0 (`npm install -g wasm-pack`) |
 | WASM 타깃 | `rustup target add wasm32-unknown-unknown` |
@@ -35,12 +36,29 @@ portable 배포용으로는 C 런타임을 정적으로 링크했습니다. 이�
 $env:RUSTFLAGS = "-C target-feature=+crt-static"; cargo build --release -p brush-app --bin brush
 ```
 
-- 결과물: `target/release/brush.exe`. 이번 빌드에서는 `CARGO_TARGET_DIR=F:\brush-target-dist`를 썼습니다.
-- `dist/native/` 구성: `brush.exe` (138,268,160 B, SHA-256 `D80738EB…8BC4A`), `LICENSE`
+- 결과물: `target/release/brush.exe`. 이번 빌드에서는 `CARGO_TARGET_DIR=target\portable`을 썼습니다 (일반 빌드 캐시와 섞이지 않게).
+- `dist/native/` 구성: `brush.exe` (138,285,056 B, SHA-256 `8D32042A…B970D6`), `LICENSE`, 사용 가이드 `README_KO.txt`
 - 의존 DLL(`dumpbin /dependents`)은 모두 Windows 기본 DLL입니다 (kernel32, user32, dxgi, opengl32 등). vcruntime은 없습니다. GPU 드라이버 DLL(DX12/Vulkan)은 실행 중에 불러오며, NVIDIA 드라이버에 포함되어 있습니다.
 - 공식 배포(cargo-dist, `dist-workspace.toml`)는 installer 없이 zip만 만들고, 기본 `release` 프로필을 씁니다 (crt-static 없음).
 
-## Web 빌드
+## Web 빌드 (데모 기반, 권장)
+
+최신 main의 web 빌드는 이 PC에서 학습이 되지 않습니다 (아래 "알려진 제한사항"). 그래서 공식 GitHub Pages 데모(`ArthurBrussee/brush-demo`, 2026-04-25 배포)와 같은 코드인 `e700993a`에 Export 수정을 옮긴 `web-demo-base` 브랜치로 web을 빌드합니다. 이 시점의 web은 Next.js 기반입니다.
+
+```bash
+git worktree add _work/demo-base web-demo-base
+cd _work/demo-base/brush_nextjs
+npm install
+npm run build                 # wasm-pack --release 후 next build (정적 내보내기 → out/)
+```
+
+- 결과물 `out/`을 `dist/web-demo/`로 복사했습니다 (파일 32개, 17.2 MB, wasm 16.3 MB). 빌드 약 7분.
+- GitHub Pages용 경로(`/brush-demo`)가 필요하면 `NEXT_PUBLIC_BASE_PATH=/brush-demo`를 주고 빌드합니다 (`build-gh-demo` 스크립트).
+- 로컬 확인: `node _work/serve-web-demo.mjs dist/web-demo 4175` → `http://localhost:4175/`. 정적 파일 서버라면 무엇이든 되지만, `.wasm`을 `application/wasm`으로 내보내야 합니다.
+- Export 수정은 `e700993a`의 API(제네릭 `Splats<B>`, up_axis/min_scale 없음)에 맞춰 옮겼습니다. 자동 체크포인트는 이 시점 런타임에 맞춰 비동기 쓰기를 유지하고, 중간 객체 목록만 없앴습니다 (web에는 자동 저장이 없음).
+- 이 브랜치의 `cargo test -p brush-serde --release --features export`: 10개 통과. 기존 방식과 새 방식의 출력이 SH 0–3에서 바이트 단위로 같습니다.
+
+## Web 빌드 (최신 main, 이 PC에서는 학습 불가)
 
 Web UI는 `apps/brush-app/web`에 있고 Vite + React + wasm-pack 구성입니다. README에는 Next.js라고 적혀 있지만 현재 코드와 다릅니다.
 
@@ -135,10 +153,16 @@ BRUSH_EXPORT_SPLATS=2764885 cargo test -p brush-serde --release -- --ignored lar
 - GUI 학습 + Export 버튼 (사용자 직접 확인, 2026-09-27): portable `brush.exe`로 학습한 뒤 저장 대화상자를 거쳐 `.ply` 저장에 성공했습니다. 파일 크기 약 200~400 MB 범위에서 확인했습니다.
 - 미확인: 2~3M splat(600 MB 이상) 규모의 GUI Export. 같은 코드 경로를 `large_export` 테스트로 2.76M/3.5M까지 확인했습니다.
 
-### Web
+### Web (데모 기반, `dist/web-demo`)
+
+- 소규모 학습 + Export 버튼 (사용자 직접 확인, Chrome, 2026-09-27): 테스트 데이터셋으로 학습이 진행되고, Export 버튼으로 `.ply` 다운로드에 성공했습니다.
+- 미확인: 2M splat 이상 규모의 web Export (원래 `RuntimeError: unreachable`이 나던 조건).
+
+### Web (최신 main)
 
 - production 빌드가 생성되었고, 페이지가 로드되었습니다. WebGPU 어댑터는 nvidia turing으로 인식되었습니다.
 - **학습 불가: 수정 전 main에서도 동일하게 재현됩니다** (아래 참고). 그래서 web Export 버튼은 테스트할 수 없었습니다.
+- H 드라이브 고장 후 다시 빌드하지 않았습니다 (`dist/web` 없음).
 
 ## 알려진 제한사항
 
@@ -149,15 +173,26 @@ BRUSH_EXPORT_SPLATS=2764885 cargo test -p brush-serde --release -- --ignored lar
    - 정렬 코드는 #546, #553에서 최근 크게 바뀌었습니다. 원본 저장소에 같은 증상의 이슈는 없습니다 (2026-09-27 검색 기준).
 2. **위 web 테스트 중 시스템 전체가 멈췄습니다.**
    - 2026-09-26 23:42, 23:54에 비정상 종료 2회 (Kernel-Power 41, BugcheckCode 0), 23:47에 GPU 드라이버 리셋 (nvlddmkm 153)이 기록되었습니다.
-   - 2026-09-27 Chrome 테스트 때도 화면 멈춤이 있었습니다.
-   - 이 PC에서 최신 main web 빌드로 학습을 시도하는 것은 권장하지 않습니다.
-3. web Export(`BlobPartsWriter`)는 컴파일만 확인했고, 브라우저 실측은 하지 못했습니다.
-4. 수정 후에도 GPU에서 읽어온 전체 배열(splat 수 × 236 B)은 여전히 한 번에 메모리에 올라갑니다. 이것까지 청크 단위로 나누려면 본문 writer를 직접 구현해야 합니다 (계획서의 2-C). 3.5M splat까지는 필요하지 않았습니다.
-5. 자동 체크포인트 저장은 이제 학습 스레드에서 동기적으로 파일에 씁니다 (수 초). 기존에도 Export가 끝날 때까지 학습을 기다렸으므로 동작상 차이는 없습니다.
+   - 첫 번째 멈춤(23:42) 때는 portable `brush.exe` 학습이 동시에 실행 중이었습니다 (23:31 메모리 급증 경고 기록).
+   - 2026-09-27 Chrome 테스트에서는 portable 없이 web(수정 전 main) 단독으로도 화면이 멈췄습니다.
+   - 따라서 최신 main web 빌드는 단독으로도 이 PC에서 시스템 멈춤을 일으킵니다. 학습을 시도하는 것은 권장하지 않습니다.
+3. 처음 보고된 "native가 로그 없이 종료된" 건은 2026-09-26 13:53 기록에 남아 있습니다.
+   - 이전 공식 포터블 `brush_app.exe`가 `0xc0000409`(Rust abort)로 종료되었습니다.
+   - 13:25에 같은 프로세스의 메모리 급증 경고가 먼저 있었습니다.
+   - 메모리 부족 계열 종료로 보이지만, Export 중이었는지는 로그로 확정할 수 없습니다.
+4. web Export(`BlobPartsWriter`)는 컴파일만 확인했고, 브라우저 실측은 하지 못했습니다.
+5. 수정 후에도 GPU에서 읽어온 전체 배열(splat 수 × 236 B)은 여전히 한 번에 메모리에 올라갑니다. 이것까지 청크 단위로 나누려면 본문 writer를 직접 구현해야 합니다 (계획서의 2-C). 3.5M splat까지는 필요하지 않았습니다.
+6. 자동 체크포인트 저장은 이제 학습 스레드에서 동기적으로 파일에 씁니다 (수 초). 기존에도 Export가 끝날 때까지 학습을 기다렸으므로 동작상 차이는 없습니다.
 
-## 참고: 작업 중 만든 로컬 폴더 (저장소 밖)
+## 로컬 폴더 구성
 
-- `F:\brush-target`, `F:\brush-target-dist`, `F:\brush-target-wasm`: 빌드 캐시 (삭제해도 됨)
-- `F:\brush-main`: 수정 전 main 비교용 git worktree. 정리 명령: `git worktree remove F:\brush-main`
-- `F:\brush-main-web`: 수정 전 main의 web 빌드 (비교용)
-- `F:\brush-backup\export-streaming.patch`: 수정 코드 백업
+모든 작업물은 `F:\Claude\brush` 안에 있습니다. 원래 `H:\Claude\brush`에서 작업했으나, 2026-09-27 H 드라이브(Crucial MX500 SATA SSD)가 입출력 오류 끝에 응답하지 않아 GitHub 포크와 백업본으로 F에 복구했습니다. 아래 `dist\` 결과물은 다시 빌드해야 합니다.
+
+| 경로 | 내용 | git |
+|---|---|---|
+| `dist\native\` | portable `brush.exe` (최신 main + Export 수정), 사용 가이드 `README_KO.txt` | `.gitignore` |
+| `dist\web-demo\` | web 빌드 (공식 데모 시점 `e700993a` + Export 수정). 테스트용 `test_dataset.zip` 포함 | `.gitignore` |
+| `_work\demo-base\` | `web-demo-base` 브랜치 작업 폴더 (git worktree) | `.git/info/exclude` |
+| `_work\backup\` | Export 수정 패치 백업 | `.git/info/exclude` |
+| `_work\serve-web-demo.mjs` | `dist\web-demo` 로컬 확인용 정적 서버 (의존성 없음) | `.git/info/exclude` |
+| `target\` | Cargo 빌드 캐시 (삭제해도 됨) | `.gitignore` |

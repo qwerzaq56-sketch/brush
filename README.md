@@ -1,3 +1,22 @@
+> [!NOTE]
+> **이 저장소는 [ArthurBrussee/brush](https://github.com/ArthurBrussee/brush)의 개인 수정판입니다.**
+>
+> 원본 Brush는 수백만 개 splat을 PLY로 저장할 때 메모리를 한꺼번에 많이 써서, 웹에서는 `RuntimeError: unreachable`로 죽고 native에서도 갑자기 꺼지는 문제가 있었습니다. 이 수정판은 PLY를 한 줄씩 바로 파일에 쓰도록 바꿔 Export 중 메모리 사용을 절반 이하로 줄였습니다 (2.76M splat 기준 +4.1 GB → +1.9 GB). 저장되는 PLY 파일은 원본과 바이트 단위로 같습니다.
+>
+> | | |
+> |---|---|
+> | **웹 데모** | https://qwerzaq56-sketch.github.io/brush/ (Chrome 최신 버전, 설치 없이 주소만 열면 됩니다) |
+> | **Windows 포터블** | [Releases](https://github.com/qwerzaq56-sketch/brush/releases)에서 zip을 받아 압축을 풀고 `brush.exe` 실행. 사용법은 zip 안의 `README_KO.txt` |
+> | **빌드 방법 · 수정 내용 · 테스트 결과** | [BUILD_NOTES.md](BUILD_NOTES.md) |
+>
+> 브랜치 구성
+> - `export-streaming` (기본): 최신 원본 main(2026-09-20) + Export 수정. Windows 포터블은 이 브랜치로 빌드합니다.
+> - `web-demo-base`: 원본의 공식 웹 데모와 같은 시점(2026-04-25) + Export 수정. 웹 데모는 이 브랜치로 빌드합니다. 최신 main의 웹 빌드는 개발 PC(RTX 2060 SUPER)에서 학습이 되지 않았기 때문입니다.
+> - `gh-pages`: 웹 데모 배포용 빌드 결과물
+> - `main`: 원본과 동일 (업데이트 동기화용)
+>
+> 아래부터는 원본 README입니다.
+
 # Brush
 
 <video src=https://github.com/user-attachments/assets/5756967a-846c-44cf-bde9-3ca4c86f1a4d>A video showing various Brush features and scenes</video>
