@@ -3,11 +3,13 @@
 >
 > 원본 Brush는 수백만 개 splat을 PLY로 저장할 때 메모리를 한꺼번에 많이 써서, 웹에서는 `RuntimeError: unreachable`로 죽고 native에서도 갑자기 꺼지는 문제가 있었습니다. 이 수정판은 PLY를 한 줄씩 바로 파일에 쓰도록 바꿔 Export 중 메모리 사용을 절반 이하로 줄였습니다 (2.76M splat 기준 +4.1 GB → +1.9 GB). 저장되는 PLY 파일은 원본과 바이트 단위로 같습니다.
 >
-> | | |
-> |---|---|
-> | **웹 데모** | https://qwerzaq56-sketch.github.io/brush/ (Chrome 최신 버전, 설치 없이 주소만 열면 됩니다) |
-> | **Windows 포터블** | [Releases](https://github.com/qwerzaq56-sketch/brush/releases)에서 zip을 받아 압축을 풀고 `brush.exe` 실행. 사용법은 zip 안의 `README_KO.txt` |
-> | **빌드 방법 · 수정 내용 · 테스트 결과** | [BUILD_NOTES.md](BUILD_NOTES.md) |
+> | | 기반 버전 | 사용법 |
+> |---|---|---|
+> | **웹 데모** | **구버전**: 원본 2026-04-25 (`e700993a`, 원본 공식 웹 데모와 같은 시점) | https://qwerzaq56-sketch.github.io/brush/ (Chrome 최신 버전, 설치 없이 주소만 열면 됩니다) |
+> | **Windows 포터블** | **신버전**: 원본 2026-09-20 (`5ee20534`, 작업 시점 최신 main) | [Releases](https://github.com/qwerzaq56-sketch/brush/releases)에서 zip을 받아 압축을 풀고 `brush.exe` 실행. 사용법은 zip 안의 `README_KO.txt` |
+> | **빌드 방법 · 수정 내용 · 테스트 결과** | | [BUILD_NOTES.md](BUILD_NOTES.md) |
+>
+> 두 버전 모두 같은 Export 수정이 들어 있습니다. 다만 웹 데모는 약 5개월 전 코드라, 그 이후 원본에 추가된 기능과 개선이 없습니다. 예) RealityCapture/Postshot 데이터셋 지원, 어안(fisheye) 카메라 모델, 데이터셋 단위(units_per_meter) 설정, 퇴화 splat을 줄이는 학습 개선. 최신 기능이 필요하면 포터블을 쓰세요.
 >
 > 브랜치 구성
 > - `export-streaming` (기본): 최신 원본 main(2026-09-20) + Export 수정. Windows 포터블은 이 브랜치로 빌드합니다.
