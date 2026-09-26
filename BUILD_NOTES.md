@@ -156,7 +156,8 @@ BRUSH_EXPORT_SPLATS=2764885 cargo test -p brush-serde --release -- --ignored lar
 ### Web (데모 기반, `dist/web-demo`)
 
 - 소규모 학습 + Export 버튼 (사용자 직접 확인, Chrome, 2026-09-27): 테스트 데이터셋으로 학습이 진행되고, Export 버튼으로 `.ply` 다운로드에 성공했습니다.
-- 미확인: 2M splat 이상 규모의 web Export (원래 `RuntimeError: unreachable`이 나던 조건).
+- 대규모 학습 + Export 버튼 (사용자 직접 확인, Chrome, 2026-09-27): 실제 데이터셋으로 학습한 뒤 **385 MB** PLY 다운로드에 성공했습니다 (약 1.6~1.7M splat, SH3 기준).
+- 미확인: 원래 `RuntimeError: unreachable`이 나던 2.76M splat(약 650 MB) 규모의 web Export.
 
 ### Web (최신 main)
 
