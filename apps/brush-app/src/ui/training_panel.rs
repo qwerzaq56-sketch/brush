@@ -97,8 +97,11 @@ async fn export(
     units_per_meter: f32,
 ) -> Result<(), Error> {
     // Training runs in metres; write the file back in the dataset's units.
-    let data = brush_serde::splat_to_ply(splat.scaled(units_per_meter), up_axis).await?;
-    rrfd::save_file("export.ply", data).await?;
+    let export = brush_serde::prepare_ply_export(splat.scaled(units_per_meter), up_axis).await?;
+    rrfd::save_file_with("export.ply", |writer| {
+        export.write_to(writer).map_err(std::io::Error::other)
+    })
+    .await?;
     Ok(())
 }
 
